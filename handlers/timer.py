@@ -4,7 +4,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import AUTHORIZED_USERS
+from config import ALLOWED_CHAT_IDS, AUTHORIZED_USERS
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,8 @@ async def start_timer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     msg = update.effective_message
 
     if update.effective_user.id not in AUTHORIZED_USERS:
+        return
+    if ALLOWED_CHAT_IDS and update.effective_chat.id not in ALLOWED_CHAT_IDS:
         return
 
     if not context.args:

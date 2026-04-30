@@ -3,6 +3,7 @@ import logging
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
 from config import BOT_TOKEN
+from handlers.getids import getids
 from handlers.record import force_summary, record_message, start_recording, stop_recording
 from handlers.start import start
 from handlers.timer import start_timer
@@ -18,6 +19,7 @@ def main() -> None:
     app = ApplicationBuilder().token(BOT_TOKEN).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start), group=0)
+    app.add_handler(CommandHandler("getids", getids), group=0)
     app.add_handler(CommandHandler("SummStart", start_recording), group=0)
     app.add_handler(CommandHandler("SummEnd", stop_recording), group=0)
     app.add_handler(CommandHandler("forcesumm", force_summary), group=0)

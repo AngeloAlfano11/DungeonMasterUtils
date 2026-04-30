@@ -7,7 +7,7 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import AUTHORIZED_USERS, BOTS_ID, IGNORED_COMMANDS, SESSIONS_DIR
+from config import ALLOWED_CHAT_IDS, AUTHORIZED_USERS, BOTS_ID, IGNORED_COMMANDS, SESSIONS_DIR
 from handlers.summarize import summarize_job
 
 logger = logging.getLogger(__name__)
@@ -40,9 +40,13 @@ def _rewrite_session(file_path: Path, messages: list[dict]) -> None:
             f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
 
+def _is_allowed_chat(update: Update) -> bool:
+    return not ALLOWED_CHAT_IDS or update.effective_chat.id in ALLOWED_CHAT_IDS
+
+
 async def start_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if user.id not in AUTHORIZED_USERS:
+    if user.id not in AUTHORIZED_USERS or not _is_allowed_chat(update):
         return
 
     key = _session_key(update)
@@ -79,7 +83,7 @@ async def start_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def stop_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if user.id not in AUTHORIZED_USERS:
+    if user.id not in AUTHORIZED_USERS or not _is_allowed_chat(update):
         return
 
     key = _session_key(update)
@@ -116,7 +120,7 @@ async def stop_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def force_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if user.id not in AUTHORIZED_USERS:
+    if user.id not in AUTHORIZED_USERS or not _is_allowed_chat(update):
         return
 
     msg = update.effective_message
