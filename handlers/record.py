@@ -7,7 +7,8 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import AUTHORIZED_USERS, SESSIONS_DIR
+from config import AUTHORIZED_USERS, BOTS_ID, IGNORED_COMMANDS, SESSIONS_DIR
+from handlers.summarize import summarize_job
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,8 @@ EDIT_SIMILARITY_THRESHOLD = 0.3
 
 
 def _sender_name(user) -> str:
+    if user.id in BOTS_ID:
+        return BOTS_ID[user.id]
     parts = [user.first_name]
     if user.last_name:
         parts.append(user.last_name)
@@ -43,8 +46,14 @@ async def start_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     key = _session_key(update)
+    msg = update.effective_message
+
     if key in active_sessions:
-        await update.effective_message.reply_text("⚠️ Recording already active in this thread.")
+        await msg.delete()
+        await update.effective_chat.send_message(
+            "Recording already active in this thread.",
+            message_thread_id=msg.message_thread_id,
+        )
         return
 
     SESSIONS_DIR.mkdir(exist_ok=True)
@@ -61,9 +70,10 @@ async def start_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     }
 
     logger.info("Session started: %s", file_path.name)
-    await update.effective_message.reply_text(
-        f"🎲 Recording started.\nFile: `{file_path.name}`",
-        parse_mode="Markdown",
+    await msg.delete()
+    await update.effective_chat.send_message(
+        "Listening...",
+        message_thread_id=msg.message_thread_id,
     )
 
 
@@ -73,25 +83,75 @@ async def stop_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     key = _session_key(update)
+    msg = update.effective_message
     session = active_sessions.pop(key, None)
+
     if session is None:
-        await update.effective_message.reply_text("⚠️ No active recording in this thread.")
+        await msg.delete()
+        await update.effective_chat.send_message(
+            "No active recording in this thread.",
+            message_thread_id=msg.message_thread_id,
+        )
         return
 
-    msg_count = len(session["messages"])
-    file_name = session["file_path"].name
-    logger.info("Session ended: %s (%d messages)", file_name, msg_count)
+    logger.info("Session ended: %s (%d messages)", session["file_path"].name, len(session["messages"]))
+    thread_id = msg.message_thread_id
+    await msg.delete()
 
-    await update.effective_message.reply_text(
-        f"✅ Recording ended.\nFile: `{file_name}`\nMessages recorded: {msg_count}",
-        parse_mode="Markdown",
+    waiting_msg = await update.effective_chat.send_message(
+        "⏳ Generating summary...",
+        message_thread_id=thread_id,
     )
-    # TODO: send session["file_path"] to AI to generate the summary
+    context.job_queue.run_once(
+        summarize_job,
+        when=0,
+        data={
+            "file_path": session["file_path"],
+            "chat_id": msg.chat_id,
+            "message_id": waiting_msg.message_id,
+            "attempt": 1,
+        },
+    )
+
+
+async def force_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    if user.id not in AUTHORIZED_USERS:
+        return
+
+    msg = update.effective_message
+    await msg.delete()
+
+    files = sorted(SESSIONS_DIR.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        await update.effective_chat.send_message(
+            "No session files found.",
+            message_thread_id=msg.message_thread_id,
+        )
+        return
+
+    latest = files[0]
+    logger.info("Force summary requested on: %s", latest.name)
+
+    waiting_msg = await update.effective_chat.send_message(
+        "⏳ Generating summary of the last session...",
+        message_thread_id=msg.message_thread_id,
+    )
+    context.job_queue.run_once(
+        summarize_job,
+        when=0,
+        data={
+            "file_path": latest,
+            "chat_id": msg.chat_id,
+            "message_id": waiting_msg.message_id,
+            "attempt": 1,
+        },
+    )
 
 
 async def record_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
-    if not msg or not msg.text:
+    if not msg or not (msg.text or msg.caption):
         return
 
     key = _session_key(update)
@@ -99,7 +159,9 @@ async def record_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if session is None:
         return
 
-    text = msg.text.strip()
+    text = (msg.text or msg.caption or "").strip()
+    if not text:
+        return
     text_lower = text.lower()
 
     first_word = text_lower.split()[0] if text_lower else ""
@@ -117,8 +179,14 @@ async def record_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not messages:
             return
 
+        # Use the replied-to message text as the search key, falling back to new_text
+        reply = msg.reply_to_message
+        search_text = (reply.text or reply.caption or "") if reply else ""
+        if not search_text:
+            search_text = new_text
+
         ratios = [
-            SequenceMatcher(None, m["text"], new_text).ratio()
+            SequenceMatcher(None, m["text"], search_text).ratio()
             for m in messages
         ]
         best_idx = ratios.index(max(ratios))
@@ -130,6 +198,15 @@ async def record_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         _rewrite_session(session["file_path"], messages)
         logger.debug("Message %d updated via edit (similarity=%.2f)", best_idx, ratios[best_idx])
         return
+
+    # Handle command messages
+    if base_command.startswith("/"):
+        if base_command in IGNORED_COMMANDS:
+            return
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            return  # bare command with no roleplay text (e.g. /roll with no args)
+        text = parts[1]  # strip command prefix, keep only the roleplay content
 
     sender = _sender_name(msg.from_user) if msg.from_user else "Unknown"
     entry = {"sender": sender, "text": text}
