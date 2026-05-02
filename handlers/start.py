@@ -1,3 +1,10 @@
+"""Landing message for /start.
+
+Sent in HTML parse mode so the link, bold tags and the &lt; &gt; in the timer
+syntax survive intact (Markdown's underscore handling would mangle the bot
+handle and command names).
+"""
+
 from telegram import Update
 from telegram.ext import ContextTypes
 

@@ -1,3 +1,9 @@
+"""Debug helper that DMs the GM the IDs of the current chat, thread, message
+and (if the command was a reply) the reply target. Used to populate
+config.AUTHORIZED_USERS / ALLOWED_CHAT_IDS without manually digging through
+Telegram exports.
+"""
+
 import logging
 
 from telegram import Update
@@ -14,6 +20,7 @@ def _bare_chat_id(chat_id: int) -> str:
 
 
 def _msg_link(chat_id: int, message_id: int, thread_id: int | None = None) -> str:
+    # t.me/c/<bare>/<thread>/<msg> for forum threads, t.me/c/<bare>/<msg> otherwise.
     bare = _bare_chat_id(chat_id)
     if thread_id:
         return f"https://t.me/c/{bare}/{thread_id}/{message_id}"
@@ -26,6 +33,8 @@ async def getids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     msg = update.effective_message
+    # Remove the trigger message so the chat stays clean — the response goes
+    # to the user via private DM.
     await msg.delete()
 
     user_label = user.full_name
@@ -49,6 +58,7 @@ async def getids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     lines.append(f"<b>Message ID:</b> <code>{msg.message_id}</code>")
 
+    # If the command was a reply, also include details about the reply target.
     reply = msg.reply_to_message
     if reply:
         reply_context_link = _msg_link(msg.chat_id, reply.message_id, msg.message_thread_id)
@@ -63,10 +73,13 @@ async def getids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 sender_label += f" (@{sender.username})"
             lines.append(f"  Sent by: <code>{sender.id}</code> — {sender_label}")
         else:
+            # No from_user typically means an anonymous group admin or a channel post.
             lines.append("  Sent by: unknown (anonymous/channel)")
 
         lines.append(f"  Chat: <code>{reply.chat.id}</code> — {reply.chat.title or 'N/A'}")
 
+        # Distinguish a thread-header (the topic-creation message has no body)
+        # from a regular message inside a forum thread.
         reply_text = reply.text or reply.caption or ""
         if not reply_text:
             lines.append("  Type: thread header message (topic creation)")
@@ -77,8 +90,11 @@ async def getids(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     info = "\n".join(lines)
 
     try:
+        # Send as a private DM so the IDs aren't leaked in the group chat.
         await context.bot.send_message(chat_id=user.id, text=info, parse_mode="HTML")
     except Exception as e:
+        # The user must have started a private chat with the bot at least once
+        # for the DM to succeed; fall back to a hint in the originating chat.
         logger.warning("Could not send private message to %d: %s", user.id, e)
         await update.effective_chat.send_message(
             "Could not send you a private message. Please start a conversation with the bot first.",

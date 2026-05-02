@@ -1,3 +1,11 @@
+"""AI summarization via Google Gemini.
+
+The transcript is uploaded as a file (Files API) so we don't pay the inline
+token tax on long sessions. The job runs through PTB's job queue with a
+fixed-delay retry on 503 (model unavailable) and posts the final summary by
+editing the placeholder message left by /SummEnd.
+"""
+
 import logging
 from pathlib import Path
 
@@ -9,9 +17,12 @@ from config import GEMINI_API_KEY
 
 logger = logging.getLogger(__name__)
 
+# Single client instance, reused across all summary jobs.
 _client = genai.Client(api_key=GEMINI_API_KEY)
 
 MODEL = "gemini-2.5-flash"
+# 5 attempts × 60s ≈ 5 minutes of total tolerance for transient 503s before
+# giving up and reporting failure to the GM.
 MAX_RETRIES = 5
 RETRY_DELAY = 60  # seconds
 
@@ -36,12 +47,19 @@ Rules:
 - Output only the bullet list. No title, no introduction, no closing sentence. Do not write things like "Here is the summary" or "Sure, here it is".
 - Keep the total response under 3800 characters."""
 
+# Telegram's hard limit per message is 4096 chars. The system instruction asks
+# Gemini to stay under 3800 to leave headroom for any wrapping.
 _USER_PROMPT = (
     "Summarize the attached RPG session transcript following the system instructions. Use the SAME LANGUAGE as the transcript."
 )
 
 
 async def generate_summary(file_path: Path) -> str:
+    """Upload the JSONL, request a summary, then delete the upload.
+
+    The upload + delete happens for every call: Gemini's free-tier file
+    storage is limited and we have no need to keep transcripts on their side.
+    """
     uploaded = await _client.aio.files.upload(
         file=file_path,
         config=types.UploadFileConfig(
@@ -58,11 +76,18 @@ async def generate_summary(file_path: Path) -> str:
         )
         return response.text
     finally:
+        # Delete the uploaded file even if generation failed.
         await _client.aio.files.delete(name=uploaded.name)
         logger.info("File deleted from Gemini: %s", uploaded.name)
 
 
 async def summarize_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """PTB job that runs generate_summary, with retry on transient 503s.
+
+    Re-schedules itself via context.job_queue when retries remain — this is
+    why MAX_RETRIES / RETRY_DELAY work without explicit asyncio.sleep loops
+    (and don't block the bot's update loop).
+    """
     data = context.job.data
     file_path: Path = data["file_path"]
     chat_id: int = data["chat_id"]
@@ -71,6 +96,7 @@ async def summarize_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         summary = await generate_summary(file_path)
+        # Replace the "Generating summary..." placeholder with the final text.
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -78,8 +104,10 @@ async def summarize_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         logger.info("Summary delivered after %d attempt(s)", attempt)
     except Exception as e:
+        # 503 = model temporarily unavailable; everything else is treated as fatal.
         is_503 = "503" in str(e)
         if is_503 and attempt < MAX_RETRIES:
+            # Update the placeholder so the GM knows we're still trying.
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
@@ -92,6 +120,8 @@ async def summarize_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             logger.warning("503 on attempt %d/%d, retrying in %ds", attempt, MAX_RETRIES, RETRY_DELAY)
         else:
+            # Either a non-503 error or we've exhausted retries — surface failure.
+            # The JSONL on disk is preserved so /forcesumm can retry later.
             logger.error("Summary generation failed after %d attempt(s): %s", attempt, e)
             await context.bot.edit_message_text(
                 chat_id=chat_id,
