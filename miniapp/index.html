@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Inventory &amp; Notes</title>
+    <!-- Telegram WebApp SDK: loaded from Telegram's CDN. Exposes `window.Telegram.WebApp`. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Tab switcher: two buttons, one of them gets .active. -->
+    <nav id="tabs">
+        <button class="tab-btn active" data-tab="inventory">🎒 Inventory</button>
+        <button class="tab-btn" data-tab="notes">📝 Notes</button>
+    </nav>
+
+    <!-- ============ INVENTORY VIEW ============ -->
+    <section id="view-inventory" class="view">
+        <header class="view-header">
+            <h2>Inventory</h2>
+            <button id="inv-add-btn" class="primary">+ Add</button>
+        </header>
+
+        <!-- Inline add/edit form. Hidden by default; shown by the Add/Edit handlers. -->
+        <form id="inv-form" class="form" hidden>
+            <input type="hidden" id="inv-form-id">
+            <label>Name
+                <input type="text" id="inv-form-name" maxlength="100" required>
+            </label>
+            <label>Quantity
+                <input type="number" id="inv-form-qty" min="0" step="1" value="1" required>
+            </label>
+            <label>Notes (max 1000 chars)
+                <textarea id="inv-form-notes" maxlength="1000" rows="3"></textarea>
+            </label>
+            <div class="form-error" id="inv-form-error" hidden></div>
+            <div class="form-actions">
+                <button type="submit" class="primary">Save</button>
+                <button type="button" id="inv-form-cancel">Cancel</button>
+            </div>
+        </form>
+
+        <ul id="inv-list" class="list"></ul>
+        <p id="inv-empty" class="empty" hidden>No items yet.</p>
+    </section>
+
+    <!-- ============ NOTES VIEW ============ -->
+    <section id="view-notes" class="view" hidden>
+        <header class="view-header">
+            <h2>Notes</h2>
+            <button id="notes-add-btn" class="primary">+ Add</button>
+        </header>
+
+        <!-- Notes list: shown when the editor is closed. -->
+        <ul id="notes-list" class="list"></ul>
+        <p id="notes-empty" class="empty" hidden>No notes yet.</p>
+
+        <!-- Editor: shown when adding or editing a note. -->
+        <form id="notes-form" class="form" hidden>
+            <!-- The original slug; empty when creating a new note. -->
+            <input type="hidden" id="notes-form-slug">
+            <label>Title
+                <input type="text" id="notes-form-title" maxlength="100" required>
+            </label>
+            <label>Content
+                <textarea id="notes-form-content" rows="14"></textarea>
+            </label>
+            <div class="form-error" id="notes-form-error" hidden></div>
+            <div class="form-actions">
+                <button type="submit" class="primary">Save</button>
+                <button type="button" id="notes-form-cancel">Back</button>
+                <button type="button" id="notes-form-delete" class="danger" hidden>Delete</button>
+            </div>
+        </form>
+    </section>
+
+    <script src="app.js"></script>
+</body>
+</html>

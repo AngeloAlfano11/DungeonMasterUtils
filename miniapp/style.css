@@ -1,0 +1,230 @@
+/* Telegram theme variables (set by the Telegram client at runtime).
+   Falling back to neutral colors so the page is still usable when opened
+   outside Telegram (e.g. desktop browser during development). */
+:root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --text: var(--tg-theme-text-color, #1c1c1c);
+    --hint: var(--tg-theme-hint-color, #888888);
+    --link: var(--tg-theme-link-color, #2481cc);
+    --button-bg: var(--tg-theme-button-color, #2481cc);
+    --button-text: var(--tg-theme-button-text-color, #ffffff);
+    --secondary-bg: var(--tg-theme-secondary-bg-color, #f1f1f1);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    padding: 0 12px 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.4;
+}
+
+/* ---------------- Tab switcher ---------------- */
+
+#tabs {
+    display: flex;
+    gap: 8px;
+    padding: 12px 0;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+}
+
+.tab-btn {
+    flex: 1;
+    padding: 10px;
+    border: 1px solid var(--hint);
+    background: var(--secondary-bg);
+    color: var(--text);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 15px;
+}
+
+.tab-btn.active {
+    background: var(--button-bg);
+    color: var(--button-text);
+    border-color: var(--button-bg);
+    font-weight: 600;
+}
+
+/* ---------------- Views ---------------- */
+
+.view-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 12px 0;
+}
+
+.view-header h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.empty {
+    color: var(--hint);
+    text-align: center;
+    padding: 32px 16px;
+}
+
+/* ---------------- Forms ---------------- */
+
+.form {
+    background: var(--secondary-bg);
+    padding: 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.form label {
+    display: flex;
+    flex-direction: column;
+    font-size: 13px;
+    color: var(--hint);
+    gap: 4px;
+}
+
+.form input,
+.form textarea {
+    padding: 8px 10px;
+    border: 1px solid var(--hint);
+    background: var(--bg);
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 15px;
+    font-family: inherit;
+}
+
+.form textarea {
+    resize: vertical;
+    min-height: 80px;
+}
+
+.form-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.form-error {
+    color: #cc3333;
+    font-size: 13px;
+    padding: 8px;
+    background: rgba(204, 51, 51, 0.1);
+    border-radius: 4px;
+}
+
+/* ---------------- Buttons ---------------- */
+
+button {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 6px;
+    background: var(--secondary-bg);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+}
+
+button.primary {
+    background: var(--button-bg);
+    color: var(--button-text);
+}
+
+button.danger {
+    background: #cc3333;
+    color: #ffffff;
+}
+
+button.icon {
+    /* Compact buttons used inside list rows (+/-, edit, delete) */
+    padding: 4px 8px;
+    font-size: 14px;
+    min-width: 32px;
+}
+
+/* ---------------- Lists ---------------- */
+
+.list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* ---------------- Inventory items ---------------- */
+
+.inv-item {
+    background: var(--secondary-bg);
+    padding: 12px;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Greyed-out style for items at qty=0: muted text, no background emphasis.
+   Triggered by adding .depleted on the <li>. */
+.inv-item.depleted {
+    opacity: 0.55;
+    background: transparent;
+    border: 1px dashed var(--hint);
+}
+
+.inv-item.depleted .inv-name {
+    color: var(--hint);
+}
+
+.inv-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.inv-name {
+    flex: 1;
+    font-weight: 600;
+    word-break: break-word;
+}
+
+.inv-qty {
+    min-width: 36px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.inv-notes {
+    color: var(--hint);
+    font-size: 13px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ---------------- Notes list ---------------- */
+
+.note-item {
+    background: var(--secondary-bg);
+    padding: 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.note-item:hover {
+    background: var(--button-bg);
+    color: var(--button-text);
+}
