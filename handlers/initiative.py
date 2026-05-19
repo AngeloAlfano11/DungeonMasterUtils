@@ -1,16 +1,29 @@
-"""Initiative tracker for /init.
+"""Initiative tracker for /init and related commands.
 
 Per-thread combat state: combatants ordered by initiative, an active pointer
-that advances on /init next, and a list of "effects" with per-round or per-
+that advances on /initnext, and a list of "effects" with per-round or per-
 combatant expiration. State is persisted to JSON files under COMBATS_DIR so
 restarts don't lose an in-progress fight.
 
-Display flow: the first combatant added to an empty fight pins a fresh
-status message in the chat; every subsequent state-mutating command edits
-that pinned message in place. Players whose `hidden` flag is true show only
-their name in the pin (init/HP omitted).
+Commands (all separate, no sub-keywords):
+  /init                          — show state (or add a combatant if args)
+  /initrack                       — list tracked effects
+  /init <name> <init> [hp[/maxhp]] [@user]
+  /initnext, /initn               — next turn
+  /initprev, /initp               — previous turn
+  /inithp <name> <±N|=N>          — modify HP
+  /initkill <name>                — mark as defeated (skipped, strikethrough)
+  /initrevive <name>              — undo kill
+  /initdel <name>                 — remove combatant
+  /inittrack <n|name> <text>      — add a tracked effect
+  /initclear                      — end the fight
+
+Display: the first combatant added pins a status message; every state-
+mutating command edits that pinned message in place. Players whose `hidden`
+flag is set show only their name (init/HP omitted).
 """
 
+import functools
 import html
 import json
 import logging
@@ -26,24 +39,8 @@ from config import AUTHORIZED_USERS, COMBATS_DIR
 
 logger = logging.getLogger(__name__)
 
-# (chat_id, thread_id) — same key used by the recorder to scope per-thread state.
 Key = tuple[int, int | None]
 encounters: dict[Key, dict] = {}
-
-USAGE = (
-    "Usage:\n"
-    "  /init                       — show current state\n"
-    "  /init list                  — show tracked effects\n"
-    "  /init <name> <init> [hp[/maxhp]] [@user]\n"
-    "  /init next | /init n        — next turn\n"
-    "  /init prev | /init p        — previous turn\n"
-    "  /init hp <name> <±N|=N>     — modify HP\n"
-    "  /init kill <name>           — mark as defeated (skipped, strikethrough)\n"
-    "  /init revive <name>         — undo kill\n"
-    "  /init rm <name>             — remove combatant\n"
-    "  /init track <n|name> <text> — track an effect\n"
-    "  /init clear                 — end fight"
-)
 
 
 # ---------- Persistence ----------
@@ -173,7 +170,7 @@ async def _require_encounter(
 ) -> tuple[Key | None, dict | None]:
     """Fetch the encounter for this chat/thread or send an error.
 
-    `allow_empty=True` is used by /init clear, which needs to operate on an
+    `allow_empty=True` is used by /initclear, which needs to operate on an
     encounter even after every combatant has been removed.
     """
     key = _key_from_msg(update.effective_message)
@@ -197,6 +194,26 @@ def _active_ping(enc: dict) -> str | None:
     they have no linked Telegram user."""
     active = enc["combatants"][enc["active_idx"]]
     return f"{active['mention']}'s turn" if active["mention"] else None
+
+
+def _gm_command(handler):
+    """Decorator: AUTHORIZED_USERS gate + best-effort delete of the trigger
+    message. Wraps every top-level init* command so the boilerplate isn't
+    repeated in each one.
+    """
+    @functools.wraps(handler)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        if user is None or user.id not in AUTHORIZED_USERS:
+            return
+        msg = update.effective_message
+        try:
+            await msg.delete()
+        except BadRequest:
+            # No delete permission — keep the trigger message, continue anyway.
+            pass
+        await handler(update, context)
+    return wrapped
 
 
 # ---------- Render ----------
@@ -240,18 +257,20 @@ def render(enc: dict) -> str:
         marker = "▶ " if i == active else "  "
         name = html.escape(c["name"])
         body = f"<u>{name}</u>" if i == active else name
+
         if not c["hidden"]:
             body += f" — init {c['init']}"
             if c["hp_current"] is not None:
                 hp = c["hp_current"]
                 body += f" — HP {hp}/{c['hp_max']}" if c["hp_max"] is not None else f" — HP {hp}"
+
         # Marker stays outside the strikethrough so the ▶ keeps standing out.
         lines.append(marker + _wrap_strike(body, is_defeated(c)))
     return "\n".join(lines)
 
 
 def render_effects(enc: dict) -> str:
-    """Build the HTML body for /init list — the active effects with rounds
+    """Build the HTML body for /initrack — the active effects with rounds
     remaining (or, for combatant-bound effects, the target turn)."""
     if not enc["effects"]:
         return "No active effects."
@@ -394,9 +413,9 @@ def _expire_effects(enc: dict, skipped_indices: list[int]) -> list[dict]:
     return expired
 
 
-# ---------- Subcommand handlers ----------
+# ---------- Internal: add combatant (called by /init dispatcher) ----------
 
-async def handle_add(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
+async def _handle_add(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
     """Add a combatant (creating the encounter on first call).
 
     Args order is flexible: any token starting with '@' is treated as the
@@ -490,8 +509,40 @@ async def handle_add(update: Update, context: ContextTypes.DEFAULT_TYPE, args: l
     await update_state_view(update, context, enc)
 
 
-async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    """Advance to the next combatant and run the per-turn expiration sweep."""
+async def _show_state(update: Update) -> None:
+    """Bare /init: print the current state without pinning."""
+    key = _key_from_msg(update.effective_message)
+    enc = encounters.get(key)
+    if enc is None or not enc["combatants"]:
+        await _send_chat(update, "No active fight. Use /init <name> <init> to start.")
+        return
+    await _send_chat(update, render(enc), parse_mode="HTML")
+
+
+# ---------- Top-level command handlers ----------
+
+@_gm_command
+async def initiative(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/init — show state with no args; with args, add a combatant."""
+    args = list(context.args or [])
+    if not args:
+        await _show_state(update)
+        return
+    await _handle_add(update, context, args)
+
+
+@_gm_command
+async def initrack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/initrack — read-only list of active effects."""
+    enc = (await _require_encounter(update))[1]
+    if enc is None:
+        return
+    await _send_chat(update, render_effects(enc), parse_mode="HTML")
+
+
+@_gm_command
+async def initnext(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/initnext, /initn — advance to the next combatant; expire round effects."""
     key, enc = await _require_encounter(update)
     if enc is None:
         return
@@ -505,21 +556,20 @@ async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE, args: 
     _save(key, enc)
     await update_state_view(update, context, enc, ping_text=_active_ping(enc))
 
-    # Surface expirations as a separate message so the GM can see what
-    # ended right at the moment it ended.
     if expired:
         txt = "Expired this round:\n" + "\n".join(_format_expired_line(e) for e in expired)
         await _send_chat(update, txt)
 
 
-async def handle_prev(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    """Move the active pointer backwards. Effects are NOT un-expired:
-    going back is meant to fix a misclick on /init next, not to rewind time."""
+@_gm_command
+async def initprev(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/initprev, /initp — move the active pointer backwards. Effects are NOT
+    un-expired: this is meant to fix a misclick on /initnext, not to rewind."""
     key, enc = await _require_encounter(update)
     if enc is None:
         return
 
-    advanced, _skipped = _advance(enc, -1)
+    advanced, _ = _advance(enc, -1)
     if not advanced:
         await _send_chat(update, "No eligible combatants to go back to.")
         return
@@ -528,15 +578,19 @@ async def handle_prev(update: Update, context: ContextTypes.DEFAULT_TYPE, args: 
     await update_state_view(update, context, enc, ping_text=_active_ping(enc))
 
 
-async def handle_hp(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    """Apply an HP delta or absolute value. Negative HP is allowed (some
-    systems care about how far below 0 you are); only the upper bound is
-    clamped to hp_max so over-healing past max doesn't happen."""
+@_gm_command
+async def inithp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/inithp <name> <±N|=N> — apply HP delta or absolute value.
+
+    Negative HP is allowed (some systems care how far below 0 you are); only
+    the upper bound is clamped to hp_max.
+    """
+    args = list(context.args or [])
     key, enc = await _require_encounter(update)
     if enc is None:
         return
     if len(args) < 2:
-        await _send_chat(update, "Usage: /init hp <name> <±N|=N>")
+        await _send_chat(update, "Usage: /inithp <name> <±N|=N>")
         return
 
     idx = await _require_combatant(update, enc, args[0])
@@ -553,7 +607,6 @@ async def handle_hp(update: Update, context: ContextTypes.DEFAULT_TYPE, args: li
         await _send_chat(update, "HP requires a sign: use +N, -N, or =N.")
         return
 
-    # Cap at max if defined; allow negative values for "very dead" tracking.
     if c["hp_max"] is not None:
         new_hp = min(c["hp_max"], new_hp)
     c["hp_current"] = new_hp
@@ -562,13 +615,15 @@ async def handle_hp(update: Update, context: ContextTypes.DEFAULT_TYPE, args: li
     await update_state_view(update, context, enc)
 
 
-async def handle_remove(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    """Remove a combatant entirely and clean up effects bound to them."""
+@_gm_command
+async def initdel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/initdel <name> — remove a combatant and clean up effects bound to them."""
+    args = list(context.args or [])
     key, enc = await _require_encounter(update)
     if enc is None:
         return
     if not args:
-        await _send_chat(update, "Usage: /init rm <name>")
+        await _send_chat(update, "Usage: /initdel <name>")
         return
 
     idx = await _require_combatant(update, enc, args[0])
@@ -598,18 +653,16 @@ async def handle_remove(update: Update, context: ContextTypes.DEFAULT_TYPE, args
 async def _set_defeated(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    args: list[str],
-    *,
     defeated: bool,
     cmd_name: str,
 ) -> None:
-    """Shared implementation for /init kill and /init revive — they only
-    differ in the boolean and the help string."""
+    """Shared implementation for /initkill and /initrevive."""
+    args = list(context.args or [])
     key, enc = await _require_encounter(update)
     if enc is None:
         return
     if not args:
-        await _send_chat(update, f"Usage: /init {cmd_name} <name>")
+        await _send_chat(update, f"Usage: /{cmd_name} <name>")
         return
     idx = await _require_combatant(update, enc, args[0])
     if idx is None:
@@ -619,28 +672,34 @@ async def _set_defeated(
     await update_state_view(update, context, enc)
 
 
-async def handle_kill(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    await _set_defeated(update, context, args, defeated=True, cmd_name="kill")
+@_gm_command
+async def initkill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/initkill <name> — mark as defeated (skipped, strikethrough)."""
+    await _set_defeated(update, context, defeated=True, cmd_name="initkill")
 
 
-async def handle_revive(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    await _set_defeated(update, context, args, defeated=False, cmd_name="revive")
+@_gm_command
+async def initrevive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/initrevive <name> — undo a kill, the combatant counts again."""
+    await _set_defeated(update, context, defeated=False, cmd_name="initrevive")
 
 
-async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    """Add a tracked effect.
+@_gm_command
+async def inittrack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/inittrack <n|name> <text> — add a tracked effect.
 
-    The first arg is overloaded:
+    First arg is overloaded:
       - integer N (positive) → round-based effect, fires after N rounds.
       - combatant name      → combatant-bound, fires when that combatant's
                               next turn comes up (or is skipped because
                               they're defeated).
     """
+    args = list(context.args or [])
     key, enc = await _require_encounter(update)
     if enc is None:
         return
     if len(args) < 2:
-        await _send_chat(update, "Usage: /init track <n|name> <text>")
+        await _send_chat(update, "Usage: /inittrack <n|name> <text>")
         return
 
     first = args[0]
@@ -678,16 +737,10 @@ async def handle_track(update: Update, context: ContextTypes.DEFAULT_TYPE, args:
     await _send_chat(update, confirm)
 
 
-async def handle_list_effects(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    """/init list — read-only effect dump, doesn't touch the pinned message."""
-    enc = (await _require_encounter(update))[1]
-    if enc is None:
-        return
-    await _send_chat(update, render_effects(enc), parse_mode="HTML")
-
-
-async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE, args: list[str]) -> None:
-    """End the encounter: unpin the status message, drop the file, forget the state."""
+@_gm_command
+async def initclear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/initclear — end the fight: unpin the status message, drop the file,
+    forget the state."""
     msg = update.effective_message
     key, enc = await _require_encounter(update, allow_empty=True)
     if enc is None:
@@ -704,64 +757,3 @@ async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE, args:
     encounters.pop(key, None)
     _delete(key)
     await _send_chat(update, "Fight cleared.")
-
-
-async def _show_state(update: Update) -> None:
-    """Bare /init: print the current state without pinning. Used as the
-    fallback when no subcommand and no add args are provided."""
-    key = _key_from_msg(update.effective_message)
-    enc = encounters.get(key)
-    if enc is None or not enc["combatants"]:
-        await _send_chat(update, "No active fight. Use /init <name> <init> to start.")
-        return
-    await _send_chat(update, render(enc), parse_mode="HTML")
-
-
-# ---------- Dispatch ----------
-
-# Subcommand keyword → handler. The dispatcher falls back to handle_add when
-# the first token is none of these (treating `/init Kael 18 60` as add shorthand).
-SUBCOMMANDS = {
-    "add": handle_add,
-    "list": handle_list_effects,
-    "next": handle_next, "n": handle_next,
-    "prev": handle_prev, "p": handle_prev, "back": handle_prev,
-    "hp": handle_hp,
-    "rm": handle_remove, "remove": handle_remove,
-    "kill": handle_kill,
-    "revive": handle_revive,
-    "track": handle_track,
-    "clear": handle_clear, "end": handle_clear,
-}
-
-
-async def initiative(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Top-level /init dispatcher.
-
-    1. AUTHORIZED_USERS gate — non-GMs are silently ignored.
-    2. Best-effort delete of the trigger message to keep the chat clean.
-    3. Bare /init → show state; first arg matches a subcommand → dispatch;
-       otherwise treat the whole arg list as a `/init add` shorthand.
-    """
-    user = update.effective_user
-    if user is None or user.id not in AUTHORIZED_USERS:
-        return
-
-    msg = update.effective_message
-    try:
-        await msg.delete()
-    except BadRequest:
-        # No delete permission — ignore, the rest of the handler still works.
-        pass
-
-    if not context.args:
-        await _show_state(update)
-        return
-
-    sub = context.args[0].lower()
-    handler = SUBCOMMANDS.get(sub)
-    if handler is not None:
-        await handler(update, context, list(context.args[1:]))
-    else:
-        # Unknown first token → assume the user meant to add a combatant.
-        await handle_add(update, context, list(context.args))

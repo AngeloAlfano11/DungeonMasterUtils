@@ -163,6 +163,80 @@ async def stop_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+def _latest_jsonl_for(key: tuple[int, int | None]) -> Path | None:
+    """Return the newest JSONL for this (chat, thread), or None if none exist."""
+    chat_id, thread_id = key
+    thread_label = str(thread_id) if thread_id is not None else "main"
+    pattern = f"chat{chat_id}_thread{thread_label}_*.jsonl"
+    files = sorted(SESSIONS_DIR.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+async def restart_recording(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Resume the most recent JSONL of this (chat, thread) as the active session.
+
+    Use case: the bot was restarted mid-session — `active_sessions` is in-memory
+    so the recording silently stopped, but the JSONL on disk is intact. This
+    re-loads it and keeps appending new messages to the same file.
+    """
+    user = update.effective_user
+    if user.id not in AUTHORIZED_USERS or not _is_allowed_chat(update):
+        return
+
+    key = _session_key(update)
+    msg = update.effective_message
+
+    if key in active_sessions:
+        await msg.delete()
+        await update.effective_chat.send_message(
+            "Recording already active in this thread. Use /SummEnd first.",
+            message_thread_id=msg.message_thread_id,
+        )
+        return
+
+    latest = _latest_jsonl_for(key)
+    if latest is None:
+        await msg.delete()
+        await update.effective_chat.send_message(
+            "No previous session to resume in this thread.",
+            message_thread_id=msg.message_thread_id,
+        )
+        return
+
+    # Replay the file into the in-memory message buffer so edit/delete by
+    # fuzzy match (the /e and /d shortcuts) have something to match against.
+    messages: list[dict] = []
+    try:
+        with open(latest, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    logger.warning("Skipping malformed line in %s", latest.name)
+    except OSError as e:
+        await msg.delete()
+        await update.effective_chat.send_message(
+            f"Failed to read previous session: {e}",
+            message_thread_id=msg.message_thread_id,
+        )
+        return
+
+    active_sessions[key] = {
+        "file_path": latest,
+        "started_by": user.id,
+        "messages": messages,
+    }
+    logger.info("Session resumed: %s (%d messages loaded)", latest.name, len(messages))
+    await msg.delete()
+    await update.effective_chat.send_message(
+        f"Resumed recording from {latest.name} ({len(messages)} messages).",
+        message_thread_id=msg.message_thread_id,
+    )
+
+
 async def force_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Re-summarize the most recent JSONL on disk.
 

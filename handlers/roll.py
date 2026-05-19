@@ -60,22 +60,12 @@ class RollError(Exception):
     """Raised when /roll input is invalid; the message is the user-facing reply."""
 
 
-def evaluate_term(body: str) -> tuple[int, str, bool]:
-    """Roll/evaluate one term. Returns (subtotal, html_fragment, is_constant).
+def _parse_dice_spec(m: re.Match) -> tuple[int, int, str | None, int | None]:
+    """Extract and validate (count, faces, mode, keep_n) from a DICE_RE match.
 
-    A "term" is either a constant integer or a dice expression. For dice,
-    we roll all dice, decide which ones are kept based on H/L, and let
-    `_render_dice_fragment` build the parenthesized display string.
+    Centralises range checks so both `evaluate_term` (rolls) and
+    `_validate_term` (no rolling, used by /macro save) share the same logic.
     """
-    m = DICE_RE.match(body)
-    if not m:
-        # Not a dice term → must be a plain integer constant.
-        try:
-            n = int(body)
-        except ValueError:
-            raise RollError(USAGE)
-        return n, str(n), True
-
     count = int(m.group(1))
     faces = int(m.group(2))
     mode = m.group(3).lower() if m.group(3) else None
@@ -94,6 +84,26 @@ def evaluate_term(body: str) -> tuple[int, str, bool]:
     if mode and not (1 <= keep_n < count):
         raise RollError("With H/L, the keep count must be ≥ 1 and < the number of dice.")
 
+    return count, faces, mode, keep_n
+
+
+def evaluate_term(body: str) -> tuple[int, str, bool]:
+    """Roll/evaluate one term. Returns (subtotal, html_fragment, is_constant).
+
+    A "term" is either a constant integer or a dice expression. For dice,
+    we roll all dice, decide which ones are kept based on H/L, and let
+    `_render_dice_fragment` build the parenthesized display string.
+    """
+    m = DICE_RE.match(body)
+    if not m:
+        # Not a dice term → must be a plain integer constant.
+        try:
+            n = int(body)
+        except ValueError:
+            raise RollError(USAGE)
+        return n, str(n), True
+
+    count, faces, mode, keep_n = _parse_dice_spec(m)
     rolls = [random.randint(1, faces) for _ in range(count)]
 
     # Pick the kept indices: top N for H, bottom N for L, all otherwise.
@@ -108,6 +118,62 @@ def evaluate_term(body: str) -> tuple[int, str, bool]:
     subtotal = sum(rolls[i] for i in kept)
     fragment = _render_dice_fragment(rolls, kept)
     return subtotal, fragment, False
+
+
+def _validate_term(body: str) -> None:
+    """Like evaluate_term but no rolling — only checks the grammar."""
+    m = DICE_RE.match(body)
+    if not m:
+        try:
+            int(body)
+        except ValueError:
+            raise RollError(USAGE)
+        return
+    _parse_dice_spec(m)  # raises on any constraint failure
+
+
+def _validate_expression(expr: str) -> None:
+    """Mirror of parse_and_evaluate_expression's parsing pass, without rolling."""
+    if not EXPR_RE.match(expr):
+        raise RollError(USAGE)
+    pos = 0
+    expected_sign = False
+    matched = False
+    for match in TOKEN_RE.finditer(expr):
+        sign_char = match.group(1)
+        body = match.group(2)
+        if pos != match.start():
+            raise RollError(USAGE)
+        if not expected_sign:
+            if sign_char is not None:
+                raise RollError(USAGE)
+            expected_sign = True
+        else:
+            if sign_char is None:
+                raise RollError(USAGE)
+        _validate_term(body)
+        pos = match.end()
+        matched = True
+    if pos != len(expr) or not matched:
+        raise RollError(USAGE)
+
+
+def validate_roll_input(args: list[str]) -> str | None:
+    """Returns an error message if args don't form valid /roll input, else None.
+
+    Pure: no dice are rolled. Used by /macro save to validate the expression
+    before persisting it.
+    """
+    try:
+        if not args:
+            return "Empty expression."
+        groups = expand_items(args[0])
+        for group in groups:
+            for expr in group:
+                _validate_expression(expr)
+        return None
+    except RollError as e:
+        return str(e)
 
 
 def _render_dice_fragment(rolls: list[int], kept: set[int]) -> str:
@@ -302,14 +368,29 @@ async def roll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Telegram entry point.
 
     Reply with a "rolling…" placeholder first, then edit it with the result.
+    Before running the parser, gives `resolve_macro` a chance to expand
+    `/roll <name>` into the saved expression for the calling user.
+
     On RollError we surface the message to the user; on any other exception
     we log and show a generic error.
     """
     msg = update.effective_message
     waiting_msg = await msg.reply_text("\U0001f3b2 rolling...")
 
+    args = list(context.args or [])
+    user_id = update.effective_user.id if update.effective_user else None
+    if user_id is not None and args:
+        # Local import to avoid a circular dependency: macro.py imports
+        # validate_roll_input from this module.
+        from handlers.macro import resolve_macro
+        new_args, err = resolve_macro(args, user_id)
+        if err:
+            await waiting_msg.edit_text(err)
+            return
+        args = new_args
+
     try:
-        text = build_roll_response(context.args or [])
+        text = build_roll_response(args)
     except RollError as e:
         await waiting_msg.edit_text(str(e))
         return

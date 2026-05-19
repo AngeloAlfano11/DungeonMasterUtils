@@ -11,12 +11,31 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 
 from config import BOT_TOKEN
 from handlers.getids import getids
-from handlers.initiative import initiative, load_all_encounters
-from handlers.record import force_summary, record_message, start_recording, stop_recording
+from handlers.initiative import (
+    initclear,
+    initdel,
+    inithp,
+    initiative,
+    initkill,
+    initnext,
+    initprev,
+    initrack,
+    initrevive,
+    inittrack,
+    load_all_encounters,
+)
+from handlers.macro import macro, macro_del, macro_reset
+from handlers.record import (
+    force_summary,
+    record_message,
+    restart_recording,
+    start_recording,
+    stop_recording,
+)
 from handlers.remind import load_all_reminders, remind
 from handlers.roll import roll
 from handlers.start import start
-from handlers.timer import start_timer
+from handlers.timer import start_timer, stop_timer
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -38,11 +57,25 @@ def main() -> None:
     app.add_handler(CommandHandler("getids", getids), group=0)
     app.add_handler(CommandHandler("SummStart", start_recording), group=0)
     app.add_handler(CommandHandler("SummEnd", stop_recording), group=0)
-    app.add_handler(CommandHandler("forcesumm", force_summary), group=0)
+    app.add_handler(CommandHandler("SummRestart", restart_recording), group=0)
+    app.add_handler(CommandHandler("SummForce", force_summary), group=0)
     app.add_handler(CommandHandler("timer", start_timer), group=0)
-    app.add_handler(CommandHandler("roll", roll), group=0)
+    app.add_handler(CommandHandler("timerstop", stop_timer), group=0)
+    app.add_handler(CommandHandler(["roll", "r"], roll), group=0)
     app.add_handler(CommandHandler("init", initiative), group=0)
+    app.add_handler(CommandHandler("initrack", initrack), group=0)
+    app.add_handler(CommandHandler(["initnext", "initn"], initnext), group=0)
+    app.add_handler(CommandHandler(["initprev", "initp"], initprev), group=0)
+    app.add_handler(CommandHandler("inithp", inithp), group=0)
+    app.add_handler(CommandHandler("initkill", initkill), group=0)
+    app.add_handler(CommandHandler("initrevive", initrevive), group=0)
+    app.add_handler(CommandHandler("initdel", initdel), group=0)
+    app.add_handler(CommandHandler("inittrack", inittrack), group=0)
+    app.add_handler(CommandHandler("initclear", initclear), group=0)
     app.add_handler(CommandHandler("remind", remind), group=0)
+    app.add_handler(CommandHandler("macro", macro), group=0)
+    app.add_handler(CommandHandler("MacroDel", macro_del), group=0)
+    app.add_handler(CommandHandler("MacroReset", macro_reset), group=0)
     # Catch-all: any text/captioned message goes to the recorder; it no-ops
     # if no session is active in the current chat/thread.
     app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, record_message), group=1)
