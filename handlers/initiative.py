@@ -230,7 +230,8 @@ def render(enc: dict) -> str:
         for i, c in enumerate(cs):
             name = html.escape(c["name"])
             wrapped = f"<u>{name}</u>" if i == active else name
-            parts.append(wrapped if c["hidden"] else f"{wrapped}({c['init']})")
+            text = wrapped if c["hidden"] else f"{wrapped}({c['init']})"
+            parts.append(_wrap_strike(text, is_defeated(c)))
         return f"ROUND {round_n} : " + " — ".join(parts)
 
     # Vertical layout: one combatant per line, marker for the active one.

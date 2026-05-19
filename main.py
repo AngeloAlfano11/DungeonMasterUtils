@@ -13,6 +13,7 @@ from config import BOT_TOKEN
 from handlers.getids import getids
 from handlers.initiative import initiative, load_all_encounters
 from handlers.record import force_summary, record_message, start_recording, stop_recording
+from handlers.remind import load_all_reminders, remind
 from handlers.roll import roll
 from handlers.start import start
 from handlers.timer import start_timer
@@ -41,12 +42,16 @@ def main() -> None:
     app.add_handler(CommandHandler("timer", start_timer), group=0)
     app.add_handler(CommandHandler("roll", roll), group=0)
     app.add_handler(CommandHandler("init", initiative), group=0)
+    app.add_handler(CommandHandler("remind", remind), group=0)
     # Catch-all: any text/captioned message goes to the recorder; it no-ops
     # if no session is active in the current chat/thread.
     app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, record_message), group=1)
 
-    # Restore persisted initiative state from disk before serving updates.
+    # Restore persisted state from disk before serving updates. Reminders need
+    # the job_queue (which is created with the Application) to re-register
+    # their run_daily jobs.
     load_all_encounters()
+    load_all_reminders(app.job_queue)
     app.run_polling()
 
 
